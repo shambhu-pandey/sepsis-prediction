@@ -1,0 +1,305 @@
+================================================================================
+FRAUD DETECTION DASHBOARD - QUICK START
+================================================================================
+
+Digital Twin–Enabled Framework for Forecasting and Mitigating Fraud with UPI
+
+================================================================================
+SETUP (Run these commands)
+================================================================================
+
+Step 1: Open PowerShell/Terminal in project folder
+--------
+cd "FRAUD_DETECTION"
+
+Step 2: Create Virtual Environment
+--------
+python -m venv venv
+venv\Scripts\activate
+
+Step 3: Install Dependencies (4-5 minutes)
+--------
+pip install -r requirements.txt
+
+Step 4: Run Dashboard (Takes 30-60 seconds first time)
+--------
+streamlit run app.py
+
+Step 5: Open Browser
+--------
+Go to: http://localhost:8501
+
+================================================================================
+DASHBOARD WALKTHROUGH (5-10 minutes)
+================================================================================
+
+SECTION 1: Data Handling
+------------------------
+1. Click "Load & Preprocess Data"
+2. Wait for dataset generation (5,000 transactions by default)
+3. See statistics: fraud rate, feature count, etc.
+4. Click data preview to explore
+
+SECTION 2: Model Training
+------------------------
+1. Click "Train All Models"
+2. Wait 2-3 minutes for training to complete
+3. See performance comparison table
+4. Review accuracy, precision, recall, F1-score, ROC-AUC
+5. View feature importance charts
+
+SECTION 3: Fraud Detection
+------------------------
+1. Choose "Sample Transaction" or enter custom details
+2. Select which model to use for prediction
+3. Click "Predict Fraud"
+4. See results:
+  - Prediction (FRAUD or LEGITIMATE)
+  - Confidence percentage
+  - Risk score (0-100)
+  - Risk level
+  - Detected anomalies
+  - Feature contributions (SHAP)
+
+SECTION 4: Digital Twin Simulation
+------------------------
+Tab 1 - Normal vs Fraud Scenarios
+  • View typical transaction patterns
+  • See fraud attack patterns
+
+Tab 2 - Attack Simulation
+  • Simulate credential compromise
+  • Simulate SIM swap attacks
+  • Simulate card testing attacks
+
+Tab 3 - Risk Analysis
+  • Analyze transaction risk factors
+  • Compare normal vs fraud risk profiles
+
+SECTION 5: Insights
+------------------------
+• Key statistics and metrics
+• Fraud detection best practices
+• System information
+
+================================================================================
+PERFORMANCE EXPECTATIONS
+================================================================================
+
+First Run Setup:
+  - Install packages: 2-5 minutes
+  - Load dashboard: 30-60 seconds
+
+Dashboard Operations:
+  - Load & preprocess data: 10-30 seconds
+  - Train all models: 2-3 minutes
+  - Make prediction: < 1 second
+  - Generate SHAP explanation: 5-10 seconds
+
+System Requirements:
+  - RAM: 4GB minimum (8GB+ recommended)
+  - Disk: 2GB free
+  - Python: 3.8+
+  - CPU: 4+ cores recommended
+
+================================================================================
+ADVANCED USAGE
+================================================================================
+
+Run Demo Script (No UI):
+--------
+python quick_start.py
+# Shows full ML pipeline in terminal in ~1 minute
+
+Using Custom Dataset:
+--------
+1. Section 1: Choose "Upload CSV"
+2. Select your CSV file
+3. Must have a fraud column (fraud, isFraud, is_fraud, or Class)
+
+Docker Deployment:
+--------
+docker-compose up -d
+# Access at http://localhost:8501
+
+Batch Predictions:
+--------
+# See USAGE_EXAMPLES.md for code samples
+
+API Server:
+--------
+# See USAGE_EXAMPLES.md for Flask example
+python -m flask run --port 5000
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Problem: "Module not found"
+Solution: Ensure dependencies installed
+  pip install -r requirements.txt
+
+Problem: "Port 8501 already in use"
+Solution: Use different port
+  streamlit run app.py --server.port 8502
+
+Problem: "Out of memory"
+Solution: Reduce dataset size in Section 1
+  • Change "num_records" slider to 1000 instead of 5000
+
+Problem: Models training very slow
+Solution: Use faster models
+  • Close other applications
+  • Use fewer records
+  • Select "Logistic Regression" only first
+
+Problem: First run taking too long
+Solution: This is normal
+  • First run compiles models and data
+  • Subsequent runs will be faster
+  • Wait 5+ minutes for full setup
+
+Problem: SHAP/LIME errors
+Solution: Try with smaller dataset
+  • Reduce to 1000 records
+  • Or disable SHAP temporarily
+
+================================================================================
+DOCUMENTATION
+================================================================================
+
+README.md
+  - Complete user guide
+  - Feature explanations
+  - Configuration options
+  - Best practices
+
+INSTALLATION.md
+  - Step-by-step setup
+  - Virtual environment
+  - Dependency management
+  - Troubleshooting
+
+DEVELOPMENT.md
+  - Architecture overview
+  - Module descriptions
+  - Extension points
+  - Code quality standards
+
+USAGE_EXAMPLES.md
+  - Quick start code
+  - Programmatic usage
+  - Real-world scenarios
+  - Common pitfalls
+
+PROJECT_MANIFEST.md
+  - File listing
+  - Feature overview
+  - Code statistics
+
+================================================================================
+KEY FEATURES
+================================================================================
+
+ - Dataset Handling
+   • Generate synthetic UPI transactions
+   • Upload custom CSV files
+   • Kaggle dataset support (PaySim, CICIDS2017)
+   • Automatic preprocessing & balancing
+
+ - Machine Learning
+   • Logistic Regression
+   • Random Forest
+   • XGBoost
+   • Autoencoder (neural network)
+   • Automatic model persistence
+
+ - Explainability
+   • SHAP analysis
+   • LIME explanations
+   • Feature importance
+   • Anomaly detection
+
+ - Digital Twin
+   • Normal transaction modeling
+   • Fraud scenario simulation
+   • Attack pattern analysis
+   • Risk factor identification
+
+ - Professional UI
+   • Clean, intuitive design
+   • Real-time metrics
+   • Interactive visualizations
+   • Non-technical user friendly
+
+================================================================================
+LEARNING PATH
+================================================================================
+
+Beginner (10 minutes):
+  1. Read README.md introduction
+  2. Run dashboard
+  3. Try Section 3 (Fraud Detection)
+
+Intermediate (30 minutes):
+  1. Complete dashboard walkthrough
+  2. Try Section 2 (Model Training)
+  3. Review model metrics
+  4. Understand feature importance
+
+Advanced (1+ hour):
+  1. Read DEVELOPMENT.md
+  2. Study module code
+  3. Review USAGE_EXAMPLES.md
+  4. Try batch processing examples
+  5. Integrate with your data
+
+================================================================================
+GETTING HELP
+================================================================================
+
+Check Documentation:
+  • README.md - If stuck on usage
+  • INSTALLATION.md - If setup issues
+  • USAGE_EXAMPLES.md - If code examples needed
+  • Project code comments - For implementation details
+
+Common Questions:
+  Q: How to use my own data?
+  A: Section 1 → "Upload CSV" option
+
+  Q: Which model is best?
+  A: Usually XGBoost (highest ROC-AUC)
+     But check metrics in Section 2
+
+  Q: How accurate is this?
+  A: Typically 95-99% accuracy on test data
+     Real-world may vary based on your data
+
+  Q: Can I deploy to production?
+  A: Yes! See INSTALLATION.md → Deployment Options
+     Docker setup included
+
+  Q: How often should I retrain?
+  A: Monthly (routine) or weekly (new fraud patterns)
+     See USAGE_EXAMPLES.md for automation code
+
+================================================================================
+YOU'RE READY TO GO!
+================================================================================
+
+Next: Run these commands and explore!
+
+    cd FRAUD_DETECTION
+    venv\Scripts\activate
+    pip install -r requirements.txt
+    streamlit run app.py
+
+Then open http://localhost:8501 in your browser
+
+Happy fraud detection!
+
+================================================================================
+Need help? Check README.md or INSTALLATION.md
+Last Updated: Feb 28, 2026 | Version 1.0.0
+================================================================================
