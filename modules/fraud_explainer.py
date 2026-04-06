@@ -36,6 +36,10 @@ def get_simple_fraud_explanation(transaction_data, feature_values, prediction, p
     # Analyze based on dataset type
     if dataset_type == "paysim":
         explanation = _explain_paysim_fraud(transaction_data, feature_values, prediction, probability)
+    elif dataset_type == "banksim":
+        explanation = _explain_banksim_fraud(transaction_data, feature_values, prediction, probability)
+    elif dataset_type == "ieee":
+        explanation = _explain_ieee_fraud(transaction_data, feature_values, prediction, probability)
     else:
         explanation = _explain_cicids_fraud(transaction_data, feature_values, prediction, probability)
     
@@ -230,11 +234,11 @@ def _explain_cicids_fraud(transaction_data, feature_values, prediction, probabil
             risk_factors.append({
                 "factor": "High Packet Volume",
                 "value": f"{packet_count} packets",
-                "issue": "Abnormal data volume - possible DDoS attack",
-                "tip": "Check if legitimate high traffic"
+                "issue": "Extremely high data volume - resembles a traffic overload attack",
+                "tip": "Check if this device is downloading a massive update; otherwise it could be infected."
             })
-            recommendations.append("Implement rate limiting")
-            recommendations.append("Enable DDoS protection")
+            recommendations.append("Implement traffic rate limiting")
+            recommendations.append("Enable network overload protection")
     
     if "flow_duration" in feature_values:
         duration = feature_values.get("flow_duration", 0)
@@ -242,8 +246,8 @@ def _explain_cicids_fraud(transaction_data, feature_values, prediction, probabil
             risk_factors.append({
                 "factor": "Connection Duration",
                 "value": f"{duration/1000:.1f} seconds",
-                "issue": "Unusually long connection",
-                "tip": "Review connection logs"
+                "issue": "Unusually long connection running silently in the background",
+                "tip": "Ensure you recognize what this device is persistently connecting to."
             })
     
     if "byte_count" in feature_values:
@@ -252,11 +256,11 @@ def _explain_cicids_fraud(transaction_data, feature_values, prediction, probabil
             risk_factors.append({
                 "factor": "Data Transfer",
                 "value": f"{bytes_sent/1024/1024:.1f} MB",
-                "issue": "Large data transfer - possible data exfiltration",
-                "tip": "Verify legitimate large transfers"
+                "issue": "A huge amount of data was sent out - possible file theft",
+                "tip": "Verify if someone legitimately uploaded large files."
             })
-            recommendations.append("Monitor outgoing traffic")
-            recommendations.append("Implement data loss prevention")
+            recommendations.append("Monitor all outgoing file uploads")
+            recommendations.append("Implement file theft prevention rules")
     
     # Protocol analysis
     if "protocol" in feature_values:
@@ -265,8 +269,8 @@ def _explain_cicids_fraud(transaction_data, feature_values, prediction, probabil
             risk_factors.append({
                 "factor": "Protocol",
                 "value": protocol,
-                "issue": "UDP is often used for attacks (faster, no verification)",
-                "tip": "Ensure UDP is necessary for your service"
+                "issue": "This connection method is less secure and often favored by hackers",
+                "tip": "Ensure this program is supposed to be running freely."
             })
     
     # Port analysis
@@ -276,10 +280,10 @@ def _explain_cicids_fraud(transaction_data, feature_values, prediction, probabil
         if port in suspicious_ports:
             port_names = {23: "Telnet", 135: "RPC", 139: "SMB", 445: "SMB", 1433: "SQL Server", 3389: "RDP"}
             risk_factors.append({
-                "factor": "Port Used",
+                "factor": "Entry Point (Port) Used",
                 "value": f"{port} ({port_names.get(port, 'Common')})",
-                "issue": "This port is commonly targeted by attackers",
-                "tip": "Close unused ports and services"
+                "issue": "This digital entry point is commonly scanned and broken into by hackers",
+                "tip": "Close unused computer connections and features"
             })
             recommendations.append(f"Review necessity of {port_names.get(port, 'port ' + str(port))}")
             recommendations.append("Use firewall to restrict access")
@@ -315,7 +319,78 @@ def _explain_cicids_fraud(transaction_data, feature_values, prediction, probabil
     return explanation
 
 
+
+def _explain_banksim_fraud(transaction_data, feature_values, prediction, probability):
+    explanation = {
+        "is_fraud": bool(prediction),
+        "fraud_probability": float(probability),
+        "risk_level": "HIGH" if probability > 0.7 else "MEDIUM" if probability > 0.3 else "LOW",
+        "main_reasons": [], "what_went_wrong": [], "simple_explanation": "", "recommendations": [], "technical_details": {}
+    }
+    amount = transaction_data.get("amount", 0)
+    category = transaction_data.get("category", "")
+    risk_factors = []
+    
+    if amount > 1000:
+        risk_factors.append({
+            "factor": "Transaction Amount", "value": f"${amount:,.2f}",
+            "issue": "This is a very large amount of money for a typical shopping trip",
+            "tip": "Verify this purchase if you didn't buy anything expensive recently."
+        })
+    elif amount > 300:
+        risk_factors.append({
+            "factor": "Transaction Amount", "value": f"${amount:,.2f}",
+            "issue": "Higher spending than your normal shopping routine",
+            "tip": "Ensure you recognize this store and amount."
+        })
+        
+    if category in ["es_travel", "es_hotelservices", "es_leisure"]:
+        risk_factors.append({
+            "factor": "Merchant Category", "value": category.replace('es_','').title(),
+            "issue": "This merchant type (like travel bookings) is a favorite target for scammers",
+            "tip": "Double-check that you actually booked this."
+        })
+        
+    explanation["main_reasons"] = risk_factors
+    if risk_factors:
+        reasons_text = [f"• {rf['factor']}: {rf['issue']}" for rf in risk_factors]
+        explanation["simple_explanation"] = f"This BankSim transaction shows unusual patterns:\n\n" + "\n".join(reasons_text)
+    else:
+        explanation["simple_explanation"] = "This retail transaction aligns with typical legitimate spending rules."
+    explanation["recommendations"] = ["Review monthly credit statements", "Set spending limits"]
+    return explanation
+
+def _explain_ieee_fraud(transaction_data, feature_values, prediction, probability):
+    explanation = {
+        "is_fraud": bool(prediction),
+        "fraud_probability": float(probability),
+        "risk_level": "HIGH" if probability > 0.7 else "MEDIUM" if probability > 0.3 else "LOW",
+        "main_reasons": [], "what_went_wrong": [], "simple_explanation": "", "recommendations": [], "technical_details": {}
+    }
+    amount = transaction_data.get("TransactionAmt", 0)
+    card_type = transaction_data.get("card4", "Credit")
+    risk_factors = []
+    
+    if amount > 500:
+        risk_factors.append({
+            "factor": "Online Purchase Amount", "value": f"${amount:,.2f}",
+            "issue": "Very high cost for an online or internet purchase",
+            "tip": "Check your purchase history to verify this order."
+        })
+    risk_factors.append({
+        "factor": "Unfamiliar Checkout", "value": "Anonymous",
+        "issue": "This purchase was made from an unfamiliar device or location",
+        "tip": "Ensure nobody else has access to your online shopping accounts."
+    })
+        
+    explanation["main_reasons"] = risk_factors
+    reasons_text = [f"• {rf['factor']}: {rf['issue']}" for rf in risk_factors]
+    explanation["simple_explanation"] = f"This online shopping payment showed these warning signs:\n\n" + "\n".join(reasons_text)
+    explanation["recommendations"] = ["Enable 2FA for online purchases", "Use virtual credit cards"]
+    return explanation
+
 def display_fraud_explanation(explanation, dataset_type="paysim"):
+
     """
     Display fraud explanation in a user-friendly way using Streamlit.
     
@@ -323,24 +398,6 @@ def display_fraud_explanation(explanation, dataset_type="paysim"):
         explanation: The explanation dict from get_simple_fraud_explanation
         dataset_type: "paysim" or "cicids"
     """
-    # Header based on prediction
-    if explanation["is_fraud"]:
-        if explanation["risk_level"] == "HIGH":
-            st.error("**FRAUD DETECTED** - High Risk Transaction")
-        else:
-            st.warning("**SUSPICIOUS Transaction Detected")
-    else:
-        st.success("**LEGITIMATE Transaction** - No Concerns")
-    
-    # Fraud Probability
-    prob = explanation["fraud_probability"]
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("Fraud Probability", f"{prob*100:.1f}%")
-    with col2:
-        st.metric("Risk Level", explanation['risk_level'])
-    
-    st.markdown("---")
     
     # Simple Explanation
     st.markdown("### What Happened?")

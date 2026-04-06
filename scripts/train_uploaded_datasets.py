@@ -53,7 +53,7 @@ def main():
 
         try:
             X, y, scaler, label_encoders, feature_names, stats = preprocess_data(
-                df, handle_missing=True, normalize=True, balance=True, sample_size=DATA_CONFIG.get("sample_size", 10000)
+                df, handle_missing=True, normalize=True, balance=False, sample_size=DATA_CONFIG.get("sample_size", 10000)
             )
         except Exception as e:
             print(f"Preprocessing failed for {f.name}: {e}")

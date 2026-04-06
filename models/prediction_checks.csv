@@ -1,0 +1,33 @@
+dataset,model,example_type,pred,probability,threshold_used,risk_level
+paysim,Logistic Regression,fraud,1,0.9983816451697618,0.005,CRITICAL / HIGH RISK
+paysim,Logistic Regression,normal,0,0.0001129468059755145,0.005,LEGITIMATE / LOW RISK
+paysim,Random Forest,fraud,1,0.999604585103993,0.005,CRITICAL / HIGH RISK
+paysim,Random Forest,normal,0,0.0,0.005,LEGITIMATE / LOW RISK
+paysim,XGBoost,fraud,1,0.9999803304672241,0.005,CRITICAL / HIGH RISK
+paysim,XGBoost,normal,0,1.8458849808666855e-05,0.005,LEGITIMATE / LOW RISK
+paysim,Isolation Forest,fraud,1,0.5086522921228064,0.005,ELEVATED RISK
+paysim,Isolation Forest,normal,1,0.5338744667103421,0.005,ELEVATED RISK
+banksim,Logistic Regression,fraud,0,0.7172403757152718,0.815,CRITICAL / HIGH RISK
+banksim,Logistic Regression,normal,0,0.010259543452672559,0.815,LEGITIMATE / LOW RISK
+banksim,Random Forest,fraud,0,0.41287051124931773,0.815,LEGITIMATE / LOW RISK
+banksim,Random Forest,normal,0,0.022480295345825754,0.815,LEGITIMATE / LOW RISK
+banksim,XGBoost,fraud,0,0.13354557752609253,0.815,LEGITIMATE / LOW RISK
+banksim,XGBoost,normal,0,0.00145130162127316,0.815,LEGITIMATE / LOW RISK
+banksim,Isolation Forest,fraud,0,0.5048172553778453,0.815,LEGITIMATE / LOW RISK
+banksim,Isolation Forest,normal,0,0.5189873241858279,0.815,LEGITIMATE / LOW RISK
+cicids,Logistic Regression,fraud,0,0.0,0.005,LEGITIMATE / LOW RISK
+cicids,Logistic Regression,normal,1,0.44733397071059094,0.005,ELEVATED RISK
+cicids,Random Forest,fraud,1,0.09857652373072813,0.005,ELEVATED RISK
+cicids,Random Forest,normal,0,0.0,0.005,LEGITIMATE / LOW RISK
+cicids,XGBoost,fraud,1,0.047071706503629684,0.005,ELEVATED RISK
+cicids,XGBoost,normal,0,5.359492570278235e-05,0.005,LEGITIMATE / LOW RISK
+cicids,Isolation Forest,fraud,1,0.37604099749214015,0.005,ELEVATED RISK
+cicids,Isolation Forest,normal,1,0.4860113410605398,0.005,ELEVATED RISK
+ieee,Logistic Regression,fraud,1,0.9505153642526472,0.01,CRITICAL / HIGH RISK
+ieee,Logistic Regression,normal,0,7.87638934253793e-08,0.01,LEGITIMATE / LOW RISK
+ieee,Random Forest,fraud,1,0.9247368408574954,0.01,CRITICAL / HIGH RISK
+ieee,Random Forest,normal,0,0.0,0.01,LEGITIMATE / LOW RISK
+ieee,XGBoost,fraud,1,0.9994825124740601,0.01,CRITICAL / HIGH RISK
+ieee,XGBoost,normal,0,4.9166403186973184e-05,0.01,LEGITIMATE / LOW RISK
+ieee,Isolation Forest,fraud,1,0.48550335126527994,0.01,ELEVATED RISK
+ieee,Isolation Forest,normal,1,0.49310924885785024,0.01,ELEVATED RISK

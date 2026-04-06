@@ -1,0 +1,55 @@
+{
+  "banksim": {
+    "features": 7,
+    "feature_names": [
+      "step",
+      "customer",
+      "age",
+      "gender",
+      "merchant",
+      "category",
+      "amount"
+    ],
+    "train_size": 20000,
+    "test_size": 5000,
+    "fraud_ratio": 0.03,
+    "leakage_cols": [],
+    "best_model": "Logistic Regression",
+    "results": {
+      "Logistic Regression": {
+        "Accuracy": 1.0,
+        "Precision": 1.0,
+        "Recall": 1.0,
+        "F1-Score": 1.0,
+        "ROC-AUC": 1.0,
+        "CV-F1 (mean\u00b1std)": "1.0000\u00b10.0000"
+      },
+      "Random Forest": {
+        "Accuracy": 1.0,
+        "Precision": 1.0,
+        "Recall": 1.0,
+        "F1-Score": 1.0,
+        "ROC-AUC": 1.0,
+        "CV-F1 (mean\u00b1std)": "1.0000\u00b10.0000"
+      },
+      "XGBoost": {
+        "Accuracy": 1.0,
+        "Precision": 1.0,
+        "Recall": 1.0,
+        "F1-Score": 1.0,
+        "ROC-AUC": 1.0,
+        "CV-F1 (mean\u00b1std)": "0.9861\u00b10.0055"
+      },
+      "Isolation Forest": {
+        "Accuracy": 0.8688,
+        "Precision": 0.1822,
+        "Recall": 0.9667,
+        "F1-Score": 0.3066,
+        "ROC-AUC": 0.9764
+      }
+    }
+  },
+  "paysim": {
+    "error": "CSV at data/paysim_clean.csv is empty or unreadable."
+  }
+}

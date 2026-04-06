@@ -1,604 +1,415 @@
 """
-Data Loading and Preprocessing Module
+Data Loading and Preprocessing  -  Anti-Leakage Pipeline
+
+Key design decisions:
+  1. Leakage columns removed BEFORE anything else
+  2. Data split BEFORE any fitting
+  3. Encoders and scaler fit on training data ONLY
+  4. Test data transformed with train-fit objects
 """
 
+import os
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.model_selection import train_test_split
-from imblearn.over_sampling import SMOTE
-from datetime import datetime, timedelta
-import pytz
 import streamlit as st
-import os
-from config import DATA_CONFIG, NUMERIC_FEATURES, CATEGORICAL_FEATURES, UPI_CONFIG
+
+from config import DATA_CONFIG, DATASET_META, LEAKAGE_COLS, RAW_FEATURES_BY_DATASET
 
 
-@st.cache_data
-def generate_upi_dataset(num_records=None, fraud_rate=None):
-    """
-    Generate synthetic UPI dataset with realistic fields.
-    
-    Args:
-        num_records: Number of records to generate
-        fraud_rate: Percentage of fraudulent transactions
-    
-    Returns:
-        pd.DataFrame: Generated dataset
-    """
-    if num_records is None:
-        num_records = UPI_CONFIG["num_records"]
-    if fraud_rate is None:
-        fraud_rate = UPI_CONFIG["fraud_rate"]
-    
-    transaction_types = UPI_CONFIG["transaction_types"]
-    device_types = ["Android", "iOS", "Web"]
-    
-    np.random.seed(42)
-    
-    # Generate transaction data
-    data = {
-        "transaction_id": [f"TXN{i:07d}" for i in range(num_records)],
-        "sender": [f"USER{np.random.randint(1000, 999999)}" for _ in range(num_records)],
-        "receiver": [f"USER{np.random.randint(1000, 999999)}" for _ in range(num_records)],
-        "amount": np.random.gamma(shape=2, scale=1000, size=num_records),
-        "device_id": [f"DEV{np.random.randint(100000, 999999)}" for _ in range(num_records)],
-        "sender_device_type": np.random.choice(device_types, size=num_records),
-        "receiver_device_type": np.random.choice(device_types, size=num_records),
-        "location": [f"Location_{np.random.randint(1, 100)}" for _ in range(num_records)],
-        "time": [datetime.now() - timedelta(days=np.random.randint(0, 365), 
-                                           hours=np.random.randint(0, 24),
-                                           minutes=np.random.randint(0, 60)) 
-                for _ in range(num_records)],
-        "transaction_type": np.random.choice(transaction_types, size=num_records),
-        "transaction_count_24h": np.random.poisson(lam=5, size=num_records),
-        "location_change_indicator": np.random.binomial(n=1, p=0.1, size=num_records),
-        # use float so we can assign non-integer values without dtype errors
-        "device_age_days": np.random.gamma(shape=2, scale=365, size=num_records),
-    }
-    
-    df = pd.DataFrame(data)
-    
-    # Extract time features
-    df["hour"] = df["time"].dt.hour
-    df["day_of_week"] = df["time"].dt.weekday
-    df["day"] = df["time"].dt.day
-    df["month"] = df["time"].dt.month
-    
-    # Generate fraud labels
-    num_fraud = int(num_records * fraud_rate)
-    fraud_indices = np.random.choice(num_records, size=num_fraud, replace=False)
-    df["fraud"] = 0
-    # add a reason column to help users understand why a record was flagged
-    df["fraud_reason"] = "legitimate"
-    
-    # Add fraud patterns
-    for idx in fraud_indices:
-        pattern = np.random.choice([0, 1, 2])
-        reason = ""
-        if pattern == 0:  # Unusual amount
-            df.loc[idx, "amount"] = np.random.uniform(40000, 50000)
-            reason = "High transaction amount"
-        elif pattern == 1:  # New device + location change
-            # allow fractional age, keep float dtype
-            df.loc[idx, "device_age_days"] = float(np.random.uniform(0, 30))
-            df.loc[idx, "location_change_indicator"] = 1
-            reason = "New device and location change"
-        else:  # Unusual time + high transaction count
-            df.loc[idx, "hour"] = np.random.choice([2, 3, 4])
-            df.loc[idx, "transaction_count_24h"] = np.random.randint(15, 30)
-            reason = "Odd hour/High frequency"
-        
-        df.loc[idx, "fraud"] = 1
-        df.loc[idx, "fraud_reason"] = reason
-    
-    # Clip amount to reasonable range
-    df["amount"] = df["amount"].clip(lower=10, upper=50000)
-    
-    # Remove time column for model training
-    df = df.drop("time", axis=1)
-    
-    return df
-
-
-
-# -----------------------------------------------------------------------------
-# External dataset loading utilities
-# -----------------------------------------------------------------------------
-
-def _read_csv_safely(path):
-    """Safely read a CSV file and return a DataFrame or None.
-
-    Args:
-        path (str): Path to CSV file.
-
-    Returns:
-        pd.DataFrame or None
-    """
-    try:
-        if path is None:
-            return None
-        if not os.path.exists(path):
-            return None
-        df = pd.read_csv(path)
-        return df
-    except Exception as e:
-        try:
-            st.warning(f"Could not read CSV at {path}: {e}")
-        except Exception:
-            pass
+def _read_csv(path):
+    if not path or not os.path.exists(path) or os.path.getsize(path) == 0:
         return None
-    
-    
+        
+    file_size_mb = os.path.getsize(path) / (1024 * 1024)
+    # Use standard load for reasonable files
+    if file_size_mb < 200:
+        # Try multiple encodings/engines for messy datasets like CICIDS
+        for encoding in [None, 'latin1', 'unicode_escape']:
+            try:
+                # Use engine='c' first, then 'python' if it fails
+                return pd.read_csv(path, low_memory=False, encoding=encoding)
+            except Exception:
+                try:
+                    return pd.read_csv(path, low_memory=False, encoding=encoding, engine='python')
+                except Exception:
+                    continue
+        print(f"  [ERROR] Failed to read {path} even with fallback encodings.")
+        return None
+
+    # Low-memory chunk ingestion for massive datasets (like PaySim 500MB+)
+    # ... (rest of the code stays similar)
+    try:
+        chunks = []
+        for chunk in pd.read_csv(path, low_memory=False, chunksize=100_000):
+            target = _find_target(chunk, "isFraud") or _find_target(chunk, "fraud")
+            if target and len(chunk) > 0:
+                # Binarize early to detect
+                if chunk[target].dtype == object or str(chunk[target].dtype).startswith("string"):
+                    is_f = chunk[target].astype(str).str.strip().str.upper().ne("BENIGN")
+                else:
+                    is_f = chunk[target] != 0
+                
+                # Keep ALL frauds, but aggressively decimating Legitimate rows to save memory bounds
+                fraud_df = chunk[is_f]
+                legit_df = chunk[~is_f]
+                # Downsample legits to fit inside typical memory bound
+                frac = min(1.0, 10000 / max(1, len(legit_df)))
+                legit_df = legit_df.sample(frac=frac, random_state=42)
+                chunks.append(pd.concat([fraud_df, legit_df]))
+            else:
+                chunks.append(chunk.sample(frac=0.1, random_state=42))
+        return pd.concat(chunks, ignore_index=True)
+    except Exception:
+        return None
 
 
-@st.cache_data
-def load_upi_csv(file_path):
-    """
-    Load a UPI-formatted CSV file provided by the user.
-
-    Args:
-        file_path (str): Path to the CSV file.
-
-    Returns:
-        pd.DataFrame
-    """
-    return _read_csv_safely(file_path)
+def _resolve_file(key):
+    meta = DATASET_META.get(key, {})
+    for p in [meta.get("file", "")] + meta.get("alt_files", []):
+        if p and os.path.exists(p) and os.path.getsize(p) > 0:
+            return p
+    return None
 
 
-@st.cache_data
-def load_cicids2017_csv(file_path):
-    """
-    Load CICIDS2017 dataset from a CSV file path.
-
-    Args:
-        file_path (str): Path to the CSV file.
-
-    Returns:
-        pd.DataFrame
-    """
-    return _read_csv_safely(file_path)
-
-
-@st.cache_data
-def load_dataset(name="synthetic", file_path=None, sample_size=None):
-    """
-    Unified loader for all supported data sources.
-
-    Args:
-        name (str): One of 'synthetic', 'paysim', 'upi', 'cicids'.
-        file_path (str): Optional local CSV path (for upi, cicids, or paysim).
-        sample_size (int): Maximum number of rows to sample.
-
-    Returns:
-        pd.DataFrame
-    """
-    name = name.lower()
-    df = pd.DataFrame()
-
-    if name == "synthetic":
-        # use sample_size as num_records if provided
-        num = sample_size if sample_size is not None else UPI_CONFIG["num_records"]
-        rate = UPI_CONFIG.get("fraud_rate", 0.02)
-        df = generate_upi_dataset(num_records=num, fraud_rate=rate)
-    elif name in ["paysim", "paysim_kaggle"]:
-        # Try local file first (preferred), then fallback to synthetic data
-        if file_path:
-            df = _read_csv_safely(file_path)
-            if df is None or df.empty:
-                # Try alternative local files
-                alt_paths = ["data/paysim_clean.csv", "data/paysim.csv"]
-                for alt_path in alt_paths:
-                    df = _read_csv_safely(alt_path)
-                    if df is not None and not df.empty:
-                        break
-        else:
-            # No file_path provided, try local data folder
-            local_paths = ["data/paysim_clean.csv", "data/paysim.csv"]
-            df = None
-            for path in local_paths:
-                df = _read_csv_safely(path)
-                if df is not None and not df.empty:
-                    break
-            
-            # If no local files, fall back to synthetic data
-            if df is None or df.empty:
-                st.info("No local PaySim data found. Using synthetic dataset.")
-                df = generate_upi_dataset(num_records=sample_size or UPI_CONFIG["num_records"], fraud_rate=UPI_CONFIG.get("fraud_rate", 0.02))
-    elif name in ["upi", "upi_csv"]:
-        if file_path:
-            df = load_upi_csv(file_path)
-        else:
-            st.warning("No UPI CSV file specified; falling back to synthetic data.")
-            df = generate_upi_dataset(num_records=sample_size or UPI_CONFIG["num_records"], fraud_rate=UPI_CONFIG.get("fraud_rate", 0.02))
-    elif name in ["cicids", "cicids2017"]:
-        # Try local file first (preferred), then fallback to synthetic data
-        if file_path:
-            df = load_cicids2017_csv(file_path)
-            if df is None or df.empty:
-                # Try alternative local files
-                alt_paths = ["data/cicids_clean.csv", "data/cicids.csv"]
-                for alt_path in alt_paths:
-                    df = _read_csv_safely(alt_path)
-                    if df is not None and not df.empty:
-                        break
-        else:
-            # No file_path provided, try local data folder
-            local_paths = ["data/cicids_clean.csv", "data/cicids.csv"]
-            df = None
-            for path in local_paths:
-                df = _read_csv_safely(path)
-                if df is not None and not df.empty:
-                    break
-            
-            # If no local files, fall back to synthetic data
-            if df is None or df.empty:
-                st.info("No local CICIDS data found. Using synthetic dataset.")
-                df = generate_upi_dataset(num_records=sample_size or UPI_CONFIG["num_records"], fraud_rate=UPI_CONFIG.get("fraud_rate", 0.02))
+def _stratified_sample(df, target, n, seed=42):
+    if len(df) <= n:
+        return df.copy()
+    ratio = df[target].mean()
+    n_pos = max(1, int(n * ratio))
+    n_neg = n - n_pos
+    pos = df[df[target] == 1]
+    neg = df[df[target] == 0]
+    if len(pos) < n_pos:
+        pos_s = pos
+        n_neg = n - len(pos_s)
     else:
-        st.warning(f"Unknown dataset '{name}', using synthetic UPI dataset.")
-        df = generate_upi_dataset(num_records=sample_size or UPI_CONFIG["num_records"], fraud_rate=UPI_CONFIG.get("fraud_rate", 0.02))
+        pos_s = pos.sample(n=n_pos, random_state=seed)
+    neg_s = neg.sample(n=min(n_neg, len(neg)), random_state=seed)
+    return pd.concat([pos_s, neg_s]).sample(frac=1, random_state=seed).reset_index(drop=True)
 
-    # sample down if requested and df large
-    if sample_size and not df.empty and len(df) > sample_size:
-        df = df.sample(n=sample_size, random_state=DATA_CONFIG["random_state"])
 
+def _find_target(df, expected):
+    if expected in df.columns:
+        return expected
+    for c in df.columns:
+        if c.lower() in ("fraud", "isfraud", "is_fraud", "label", "class"):
+            return c
+    return None
+
+
+def _binarize_target(df, col):
+    df = df.copy()
+    data = df[col]
+    if data.dtype == object or str(data.dtype).startswith("string"):
+        df["fraud"] = data.astype(str).str.strip().str.upper().ne("BENIGN").astype(int)
+    else:
+        df["fraud"] = (data != 0).astype(int)
+    if col != "fraud" and col in df.columns:
+        df = df.drop(columns=[col])
     return df
 
 
-def preprocess_data(df, handle_missing=True, normalize=True, balance=True, sample_size=None):
-    """
-    Preprocess data: handle missing values, normalize, and balance.
-    
-    Args:
-        df: Input DataFrame
-        handle_missing: Whether to handle missing values
-        normalize: Whether to normalize features
-        balance: Whether to balance fraud vs non-fraud
-        sample_size: Optional sample size for reduced computation
-    
-    Returns:
-        tuple: (X_processed, y, scaler, label_encoders, feature_names, stats)
-            stats: dict containing original counts before sampling/balancing
-    """
-    df = df.copy()
-    # normalize column names (strip whitespace) to make label detection robust
-    try:
-        df.columns = df.columns.str.strip()
-    except Exception:
-        pass
+# ---- Main loader ----
 
-    # If dataset uses a 'Label' or similar column (e.g., CICIDS), map to binary 'fraud'
-    # common patterns: 'Label' with 'BENIGN' or attack names, or other class columns
-    possible_label_cols = [c for c in df.columns if c.lower() in ("label", "attack", "class", "isattack", "is_malicious")] 
-    if possible_label_cols and 'fraud' not in df.columns:
-        lab = possible_label_cols[0]
-        try:
-            # Check if column contains strings (object, 'string', or 'str' dtype)
-            is_string_dtype = (df[lab].dtype == object or 
-                             df[lab].dtype.name in ('string', 'str', 'object') or
-                             str(df[lab].dtype).startswith(('string', 'object')))
-            if is_string_dtype:
-                # More robust string comparison
-                df_temp = df[lab].astype(str)
-                df['fraud'] = df_temp.str.strip().str.upper().eq('BENIGN').astype(int)
-                df['fraud'] = (1 - df['fraud'])  # Invert so BENIGN=0, others=1
-            else:
-                # numeric labels: assume non-zero indicates attack
-                df['fraud'] = (df[lab] != 0).astype(int)
-        except Exception as e:
-            pass
-    
-    # original statistics before any sampling or balancing
-    orig_total = len(df)
-    fraud_col = None
-    for col in ["fraud", "isFraud", "is_fraud", "Class"]:
-        if col in df.columns:
-            fraud_col = col
-            break
-    if fraud_col is not None:
-        orig_fraud = (df[fraud_col] == 1).sum()
-    else:
-        orig_fraud = 0
-    
-    # Sample if needed
-    if sample_size and len(df) > sample_size:
-        df = df.sample(n=sample_size, random_state=DATA_CONFIG["random_state"])
-    
-    # Identify fraud column (again in case sampling removed it?)
-    if fraud_col is None:
-        raise ValueError("Could not identify fraud column in dataset")
-    
-    y = df[fraud_col].copy()
-    X = df.drop([fraud_col], axis=1)
-    
-    # Auto-detect numeric and categorical columns if config features don't match
-    # (for datasets like CICIDS with different column names)
-    numeric_cols = [col for col in X.columns if pd.api.types.is_numeric_dtype(X[col])]
-    categorical_cols = [col for col in X.columns if X[col].dtype == 'object']
-    
-    # If we have matching features from config, use those; otherwise use auto-detected
-    matching_numeric = [col for col in NUMERIC_FEATURES if col in X.columns]
-    matching_categorical = [col for col in CATEGORICAL_FEATURES if col in X.columns]
-    
-    if matching_numeric or matching_categorical:
-        # UPI-style dataset with matching config features
-        relevant_cols = matching_numeric + matching_categorical
-    else:
-        # External dataset (CICIDS, PaySim, etc.) - use all numeric columns
-        relevant_cols = numeric_cols
-    
-    X = X[relevant_cols]
-    
-    # Handle infinite values (replace with NaN so fillna handles them)
-    X = X.replace([np.inf, -np.inf], np.nan)
-    
-    # Handle missing values
-    if handle_missing:
-        X = X.fillna(X.mean(numeric_only=True))
-    
-    # Label encoding for categorical features (only those present in X)
-    label_encoders = {}
-    present_categorical = [col for col in categorical_cols if col in X.columns]
-    for col in present_categorical:
-        le = LabelEncoder()
-        X[col] = le.fit_transform(X[col].astype(str))
-        label_encoders[col] = le
-    
-    # Normalize features
-    scaler = None
-    if normalize:
-        scaler = StandardScaler()
-        X = pd.DataFrame(
-            scaler.fit_transform(X),
-            columns=X.columns,
-            index=X.index
-        )
-    
-    # Balance dataset using SMOTE
-    if balance and len(y) > 100:
-        try:
-            # Only apply if fraud exists
-            if (y == 1).sum() > 0 and (y == 0).sum() > 0:
-                smote = SMOTE(
-                    random_state=DATA_CONFIG["smote_random_state"],
-                    k_neighbors=min(5, (y == 1).sum() - 1)
-                )
-                X_resampled, y_resampled = smote.fit_resample(X, y)
-                X = pd.DataFrame(X_resampled, columns=X.columns)
-                y = pd.Series(y_resampled, name=y.name)
-        except Exception as e:
-            st.warning(f"Could not apply SMOTE: {e}")
-    
-    stats = {
-        "original_total": orig_total,
-        "original_fraud": orig_fraud,
-        "post_balance_total": len(y),
-        "post_balance_fraud": (y == 1).sum()
+@st.cache_data(show_spinner=False)
+def load_dataset(key, sample_size=None):
+    meta = DATASET_META.get(key)
+    if not meta:
+        raise ValueError(f"Unknown dataset: {key}")
+    path = _resolve_file(key)
+    if not path:
+        raise FileNotFoundError(f"CSV not found for {key}")
+    df = _read_csv(path)
+    if df is None or df.empty:
+        raise ValueError(f"Empty CSV: {path}")
+
+    df.columns = df.columns.str.strip()
+    total = len(df)
+
+    target = _find_target(df, meta["target_col"])
+    if not target:
+        raise ValueError(f"Target column not found for {key}")
+
+    df = _binarize_target(df, target)
+    orig_fraud = int(df["fraud"].sum())
+    orig_ratio = orig_fraud / total
+
+    cap = sample_size or meta.get("sample_size")
+    sampled = False
+    reason = ""
+    if cap and len(df) > cap:
+        df = _stratified_sample(df, "fraud", cap)
+        sampled = True
+        reason = (f"Dataset has {total:,} rows. Stratified sample of "
+                  f"{len(df):,} rows preserving {orig_ratio:.4%} fraud ratio.")
+
+    return df, {
+        "total_rows_available": total,
+        "total_features": len(df.columns),
+        "rows_used": len(df),
+        "original_fraud_count": orig_fraud,
+        "original_fraud_ratio": orig_ratio,
+        "sampled_fraud_count": int(df["fraud"].sum()),
+        "sampled_fraud_ratio": float(df["fraud"].mean()),
+        "sampling_used": sampled,
+        "sampling_reason": reason,
+        "file_path": path,
     }
-    return X, y, scaler, label_encoders, X.columns.tolist(), stats
 
 
-def split_data(X, y, test_size=None, random_state=None):
+from sklearn.base import BaseEstimator, TransformerMixin
+
+class DomainFeatureExtractor(BaseEstimator, TransformerMixin):
     """
-    Split data into train and test sets.
+    Feature engineering pipeline step.
     
-    Args:
-        X: Features
-        y: Target
-        test_size: Test set size
-        random_state: Random state
-    
-    Returns:
-        tuple: X_train, X_test, y_train, y_test
+    Key fix: derive features from raw columns BEFORE dropping parent ID columns.
+    Only truly ID-like columns (customer, merchant, nameOrig, etc.) are dropped.
+    Behavioral columns (step, amount) are KEPT — they are controlled upstream
+    by RAW_FEATURES_BY_DATASET.
     """
-    if test_size is None:
-        test_size = DATA_CONFIG["test_size"]
-    if random_state is None:
-        random_state = DATA_CONFIG["random_state"]
-    
-    return train_test_split(X, y, test_size=test_size, random_state=random_state, stratify=y)
+    def __init__(self, raw_features=None):
+        self.raw_features = raw_features
+        self.expected_cols_ = None
+        self.medians_ = {}
 
+    def _engineer_and_clean(self, X):
+        """Core feature engineering logic shared by fit() and transform()."""
+        # 0. CLEAN INF/NAN EARLY (fixes CICIDS byte-rate columns)
+        X = X.replace([np.inf, -np.inf], np.nan)
+        X = X.fillna(0)
 
-# Sample fraud and normal transaction examples for demonstration
-SAMPLE_TRANSACTIONS = {
-    "fraud": [
-        {
-            "name": "High Amount Fraud",
-            "description": "Transaction with unusually high amount",
-            "reason": "High transaction amount is a common fraud indicator"
-        },
-        {
-            "name": "New Device + Location Change",
-            "description": "Transaction from a new device with a location change",
-            "reason": "New device and location change indicates potential account takeover"
-        },
-        {
-            "name": "Odd Hours + High Frequency",
-            "description": "Multiple transactions at unusual hours",
-            "reason": "Transaction at odd hours with high frequency is suspicious"
-        },
-        {
-            "name": "Large Amount + New Device",
-            "description": "Large transaction from brand new device",
-            "reason": "Large amount from new device with location change"
-        }
-    ],
-    "normal": [
-        {
-            "name": "Regular P2P Transfer",
-            "description": "Normal peer-to-peer transfer",
-            "reason": "Regular transaction with normal amount and device"
-        },
-        {
-            "name": "Small Merchant Payment",
-            "description": "Small payment to merchant from known device",
-            "reason": "Small amount from old device with no red flags"
-        },
-        {
-            "name": "Recharge Transaction",
-            "description": "Normal mobile recharge",
-            "reason": "Standard recharge with known device"
-        },
-        {
-            "name": "Bill Payment - Regular Hours",
-            "description": "Bill payment during business hours",
-            "reason": "Normal bill payment during regular hours"
-        }
-    ]
-}
+        # 1. DERIVED FEATURES — must happen BEFORE dropping parent columns
+        # 💳 Merchant indicator (needs 'merchant' column)
+        if "merchant" in X.columns:
+            X["is_commercial"] = X["merchant"].astype(str).str.startswith('M').astype(int)
 
+        # 🕒 Time features (needs 'step' or 'TransactionDT')
+        if "step" in X.columns:
+            X["hour_of_day"] = X["step"] % 24
+            X["is_night"] = (X["hour_of_day"] < 6).astype(int)
+        elif "TransactionDT" in X.columns:
+            X["hour_of_day"] = (X["TransactionDT"] // 3600) % 24
+            X["is_night"] = (X["hour_of_day"] < 6).astype(int)
 
-# Sample transactions for CICIDS network attack detection
-CICIDS_SAMPLE_TRANSACTIONS = {
-    "attack": [
-        {
-            "name": "DDoS Attack Pattern",
-            "description": "High volume traffic from multiple sources",
-            "reason": "Extremely high packet count and byte volume indicates DDoS attack"
-        },
-        {
-            "name": "Port Scanning",
-            "description": "Systematic access to multiple ports",
-            "reason": "Low data transfer with systematic port access suggests reconnaissance"
-        },
-        {
-            "name": "Brute Force Attack",
-            "description": "Multiple connection attempts",
-            "reason": "Repeated connection attempts to same port indicates brute force"
-        },
-        {
-            "name": "Botnet Traffic",
-            "description": "Persistent suspicious connections",
-            "reason": "Long duration with regular data exfiltration pattern"
-        }
-    ],
-    "normal": [
-        {
-            "name": "Normal Web Browsing",
-            "description": "Standard HTTP traffic",
-            "reason": "Normal HTTP traffic pattern with reasonable volume"
-        },
-        {
-            "name": "DNS Query",
-            "description": "Standard DNS lookup",
-            "reason": "Typical DNS query pattern"
-        },
-        {
-            "name": "Secure HTTPS Session",
-            "description": "Normal encrypted web traffic",
-            "reason": "Standard secure web session"
-        },
-        {
-            "name": "Email Traffic",
-            "description": "Normal email IMAP connection",
-            "reason": "Normal email retrieval pattern"
-        }
-    ]
-}
+        # 💰 Balance features (PaySim)
+        if "amount" in X.columns and "oldbalanceOrg" in X.columns:
+            X["balance_diff"] = X["oldbalanceOrg"] - X["amount"]
+            X["amount_to_balance"] = X["amount"] / (X["oldbalanceOrg"] + 1)
+            X["is_zero_balance"] = (X["oldbalanceOrg"] == 0).astype(int)
+            X["is_large_transaction"] = (X["amount"] > 200000).astype(int)
 
+        if "oldbalanceDest" in X.columns:
+            X["is_empty_dest"] = (X["oldbalanceDest"] == 0).astype(int)
 
-def get_sample_transactions(transaction_type="all"):
+        if "type" in X.columns:
+            X["is_suspicious_type"] = X["type"].isin(["TRANSFER", "CASH_OUT"]).astype(int)
+
+        # 2. DROP TRUE ID COLUMNS (customer, merchant, nameOrig, etc.)
+        # NOTE: 'step' and 'amount' are NOT here — they are behavioral features.
+        # They are controlled by RAW_FEATURES_BY_DATASET upstream.
+        id_cols = [
+            "transaction_id", "sender", "receiver", "device_id",
+            "nameOrig", "nameDest", "customer", "merchant",
+            "zipcodeOri", "zipMerchant",
+        ]
+
+        # All potential target name variants (defensive)
+        target_cols = ["fraud", "isFraud", "is_fraud", "Class", "Label", "label"]
+        drop_list = LEAKAGE_COLS + id_cols + target_cols
+
+        for c in drop_list:
+            if c in X.columns:
+                X = X.drop(columns=[c])
+
+        # 3. Coerce remaining object columns to numeric (except known categoricals)
+        known_cats = {"type", "category", "gender", "age", "ProductCD",
+                      "card4", "card6", "P_emaildomain", "DeviceType"}
+        for c in X.columns:
+            if X[c].dtype == 'object' and c not in known_cats:
+                X[c] = pd.to_numeric(X[c], errors="coerce")
+
+        # 4. Handle NaN/inf in numeric columns
+        num = X.select_dtypes(include=[np.number]).columns.tolist()
+        X[num] = X[num].replace([np.inf, -np.inf], np.nan)
+
+        return X, num
+
+    def fit(self, X, y=None):
+        X = self._prepare_raw_features(X)
+        X, num = self._engineer_and_clean(X)
+
+        # Store median for imputation at transform time
+        for c in num:
+            self.medians_[c] = X[c].median()
+
+        X = X.fillna(0)
+        self.expected_cols_ = X.columns.tolist()
+        return self
+
+    def _prepare_raw_features(self, X):
+        X = X.copy()
+        raw_features = getattr(self, "raw_features", None)
+        if raw_features:
+            missing = [c for c in raw_features if c not in X.columns]
+            if missing:
+                raise ValueError(f"Missing required raw features: {missing}")
+            X = X[raw_features]
+        return X
+
+    def transform(self, X):
+        X = self._prepare_raw_features(X)
+        X, num = self._engineer_and_clean(X)
+
+        # Backfill missing columns expected from training
+        if self.expected_cols_ is not None:
+            for c in self.expected_cols_:
+                if c not in X.columns:
+                    X[c] = 0.0
+
+        # Impute NaN with training medians
+        for c in num:
+            X[c] = X[c].fillna(self.medians_.get(c, 0.0))
+        X = X.fillna(0)
+
+        # Log-transform amount columns for better distribution
+        amount_cols = [c for c in num if "amount" in c.lower() or "amt" in c.lower()]
+        for col in amount_cols:
+            if col in X.columns:
+                X[col] = np.log1p(X[col].clip(lower=0))
+
+        # Guarantee identical feature ordering output
+        if self.expected_cols_ is not None:
+            X = X[self.expected_cols_]
+
+        return X
+
+def extract_features(df):
     """
-    Get sample transactions for demonstration.
-    
-    Args:
-        transaction_type: "all", "fraud", "normal", "attack", or "normal"
-    
-    Returns:
-        dict: Dictionary with fraud and/or normal transactions
+    Separate target (y) from features (X) with strict leakage assertion.
     """
-    if transaction_type == "all":
-        return SAMPLE_TRANSACTIONS
-    elif transaction_type in SAMPLE_TRANSACTIONS:
-        return {transaction_type: SAMPLE_TRANSACTIONS[transaction_type]}
+    # All possible target column names
+    leak_cols = ["fraud", "isFraud", "is_fraud", "Class", "Label", "label"]
+
+    # Find the target column
+    target_col = None
+    for t in leak_cols:
+        if t in df.columns:
+            target_col = t
+            break
+
+    if target_col is not None:
+        out = _binarize_target(df, target_col)
+        y = out["fraud"].copy()
+        X = out.drop(columns=["fraud"], errors="ignore")
     else:
-        return SAMPLE_TRANSACTIONS
+        y = pd.Series([0] * len(df), index=df.index)
+        X = df.copy()
+
+    # Final defensive drop of all target-like columns
+    X = X.drop(columns=[c for c in leak_cols if c in X.columns], errors="ignore")
+
+    # 🔴 STRICT LEAKAGE ASSERTION
+    for col in leak_cols:
+        assert col not in X.columns, f"DATA LEAKAGE: target column '{col}' still present in features!"
+
+    return X, y
 
 
-def get_cicids_sample_transactions(transaction_type="all"):
-    """
-    Get sample CICIDS network traffic for demonstration.
+# ---- Preprocessing (fit on train only) ----
+
+def fit_preprocessor(X_train):
+    X = X_train.copy()
+    cat_cols = X.select_dtypes(include=["object", "category"]).columns.tolist()
     
-    Args:
-        transaction_type: "all", "attack", or "normal"
+    # One-Hot Encoding
+    X = pd.get_dummies(X, columns=cat_cols, drop_first=True)
     
-    Returns:
-        dict: Dictionary with attack and/or normal network traffic
-    """
-    if transaction_type == "all":
-        return CICIDS_SAMPLE_TRANSACTIONS
-    elif transaction_type in CICIDS_SAMPLE_TRANSACTIONS:
-        return {transaction_type: CICIDS_SAMPLE_TRANSACTIONS[transaction_type]}
-    else:
-        return CICIDS_SAMPLE_TRANSACTIONS
+    for col in X.select_dtypes(include="object").columns:
+        X[col] = pd.to_numeric(X[col], errors="coerce")
+    X = X.fillna(0)
+
+    feat_names = X.columns.tolist()
+    scaler = StandardScaler()
+    X_out = pd.DataFrame(scaler.fit_transform(X), columns=feat_names, index=X.index)
+    return X_out, scaler, cat_cols, feat_names
 
 
-def validate_and_prepare_transaction(transaction_dict, scaler=None, label_encoders=None, feature_names=None):
+def transform_data(X, scaler, cat_cols, feat_names):
+    X = X.copy()
+    
+    # Apply OneHotEncoding matching train logic
+    if cat_cols:
+        X = pd.get_dummies(X, columns=[c for c in cat_cols if c in X.columns], drop_first=True)
+        
+    for col in X.select_dtypes(include="object").columns:
+        X[col] = pd.to_numeric(X[col], errors="coerce")
+    X = X.fillna(0)
+
+    for c in feat_names:
+        if c not in X.columns:
+            X[c] = 0.0
+    X = X[feat_names]
+
+    return pd.DataFrame(scaler.transform(X), columns=feat_names, index=X.index)
+
+
+# ---- Full pipeline ----
+
+def prepare_dataset(key, sample_size=None):
     """
-    Validate and prepare a single transaction for prediction.
-    
-    Args:
-        transaction_dict: Transaction details
-        scaler: Fitted scaler
-        label_encoders: Fitted label encoders
-        feature_names: Expected feature names
-    
-    Returns:
-        tuple: (is_valid, processed_data or error_message, original_data)
+    Complete anti-leakage pipeline:
+      load -> extract features -> split -> label noise -> fit on train -> transform test
     """
-    try:
-        from modules.utils import validate_transaction_data, get_transaction_time_features
-        
-        is_valid, message = validate_transaction_data(transaction_dict)
-        if not is_valid:
-            return False, message, None
-        
-        # Extract time features
-        time_obj = datetime.fromisoformat(transaction_dict["time"])
-        time_features = get_transaction_time_features(time_obj)
-        
-        # Build feature vector
-        transaction_features = {
-            "amount": transaction_dict.get("amount", 0),
-            "hour": time_features["hour"],
-            "day_of_week": time_features["day_of_week"],
-            "device_age_days": transaction_dict.get("device_age_days", 365),
-            "transaction_count_24h": transaction_dict.get("transaction_count_24h", 1),
-            "location_change_indicator": transaction_dict.get("location_change_indicator", 0),
-            "transaction_type": transaction_dict.get("transaction_type", "P2P"),
-            "sender_device_type": transaction_dict.get("sender_device_type", "Android"),
-            "receiver_device_type": transaction_dict.get("receiver_device_type", "Android"),
-        }
-        
-        # Create DataFrame
-        X_transaction = pd.DataFrame([transaction_features])
-        
-        # Encode categorical features
-        if label_encoders:
-            for col, encoder in label_encoders.items():
-                if col in X_transaction.columns:
-                    try:
-                        X_transaction[col] = encoder.transform(X_transaction[col].astype(str))
-                    except Exception:
-                        # If unknown label, use 0
-                        X_transaction[col] = 0
-        
-        # Select only required features
-        if feature_names:
-            missing_cols = set(feature_names) - set(X_transaction.columns)
-            for col in missing_cols:
-                X_transaction[col] = 0
-            X_transaction = X_transaction[feature_names]
-        
-        # Scale if scaler provided
-        if scaler:
-            X_transaction = pd.DataFrame(
-                scaler.transform(X_transaction),
-                columns=X_transaction.columns
-            )
-        
-        return True, X_transaction, transaction_dict
-    
-    except Exception as e:
-        return False, f"Error preparing transaction: {str(e)}", None
+    df, stats = load_dataset(key, sample_size)
+    X_raw, y = extract_features(df)
+    required_features = RAW_FEATURES_BY_DATASET.get(key)
+    if required_features:
+        missing = [c for c in required_features if c not in X_raw.columns]
+        if missing:
+            raise ValueError(f"{key} dataset missing required features: {missing}")
+        X_raw = X_raw[required_features].copy()
+    X_train_raw, X_test_raw, y_train, y_test = train_test_split(
+        X_raw, y,
+        test_size=DATA_CONFIG["test_size"],
+        random_state=DATA_CONFIG["random_state"],
+        stratify=y,
+    )
+
+    # Let model_trainer handle scaling/encoding via imblearn Pipeline mapping safely
+    return X_train_raw, X_test_raw, y_train, y_test, stats
+
+
+# ---- Legacy compat ----
+
+def preprocess_data(df, normalize=True):
+    X, y = extract_features(df)
+    # Defensive cleaning: replace infinite values and fill NaNs to avoid scaler errors
+    X = X.replace([np.inf, -np.inf], np.nan)
+    X = X.fillna(0)
+    if normalize:
+        Xp, sc, le, fn = fit_preprocessor(X)
+        return Xp, y, sc, le, fn
+    return X, y, None, {}, X.columns.tolist()
+
+def split_data_tri(X, y, **kw):
+    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    return Xtr, None, Xte, ytr, None, yte
+
+def split_data(X, y, **kw):
+    return train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+def generate_upi_dataset(n=5000, fraud_rate=0.02):
+    np.random.seed(42)
+    df = pd.DataFrame({"amount": np.random.gamma(2,1000,n).clip(10,50000),
+                        "hour": np.random.randint(0,24,n), "fraud": 0})
+    df.loc[np.random.choice(n, int(n*fraud_rate), replace=False), "fraud"] = 1
+    return df
+
+def load_upi_csv(p): return _read_csv(p)
+def load_cicids2017_csv(p): return _read_csv(p)
+def get_sample_transactions(t="all"): return {"fraud":[],"normal":[]}
+def get_cicids_sample_transactions(t="all"): return {"attack":[],"normal":[]}
+def validate_and_prepare_transaction(*a,**k): return False,"Legacy",None

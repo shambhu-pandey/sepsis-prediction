@@ -1,317 +1,200 @@
 """
-Explainability Module using SHAP and LIME
+Explainability Module — SHAP, LIME, and feature importance visualizations.
+Addresses the Problem Statement requirement for transparent, user-friendly AI explanations.
 """
 
 import numpy as np
 import pandas as pd
-import streamlit as st
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import shap
-import lime
-import lime.lime_tabular
-from modules.model_trainer import get_feature_importance
+import streamlit as st
+
+# Lazy imports to avoid crashing if optional deps missing
+try:
+    import shap
+    _SHAP_AVAILABLE = True
+except ImportError:
+    _SHAP_AVAILABLE = False
+
+try:
+    from lime.lime_tabular import LimeTabularExplainer
+    _LIME_AVAILABLE = True
+except ImportError:
+    _LIME_AVAILABLE = False
+
+from modules.model_trainer import _extract_estimator, _predict_scores
 
 
-def generate_shap_explanation(model, X_data, X_sample, feature_names, model_type="classification", max_display=10):
+# ───────────────────────────── SHAP ─────────────────────────────
+
+def generate_shap_explanation(model_wrapper, X_train_sample, X_instance, feature_names):
     """
-    Generate SHAP explanation for model predictions.
-    
-    Args:
-        model: Trained model
-        X_data: Background data for SHAP
-        X_sample: Sample to explain
-        feature_names: Feature names
-        model_type: Type of model
-        max_display: Maximum features to display
-    
-    Returns:
-        dict: SHAP values and explanation
+    Render a SHAP waterfall or summary-bar plot for a single transaction.
+    Works for tree-based models (RF / XGBoost) and falls back to KernelExplainer.
     """
+    if not _SHAP_AVAILABLE:
+        st.warning("SHAP is not installed. Run `pip install shap` to enable this feature.")
+        return False
+
+    estimator = _extract_estimator(model_wrapper)
+    st.markdown("#### 🔵 SHAP — Additive Feature Contributions")
+    st.markdown("Each bar shows how much a feature pushed the fraud probability **up (red) or down (blue)** from the baseline average.")
+
     try:
-        if model_type == "autoencoder":
-            # For autoencoder, just return feature norms
-            sample_array = X_sample.values if isinstance(X_sample, pd.DataFrame) else X_sample
-            reconstruction = model["model"].predict(sample_array, verbose=0)
-            errors = np.abs(sample_array - reconstruction)[0]
-            
-            feature_contributions = {}
-            for name, error in zip(feature_names, errors):
-                feature_contributions[name] = float(error)
-            
-            return {
-                "shap_values": feature_contributions,
-                "type": "reconstruction_error",
-                "base_value": float(np.mean(errors))
-            }
-        
-        # For tree-based models, use TreeExplainer
-        if hasattr(model, 'tree_'):
-            explainer = shap.TreeExplainer(model)
+        type_str = str(type(estimator)).lower()
+        if 'forest' in type_str or 'xgb' in type_str or 'gradient' in type_str:
+            explainer = shap.TreeExplainer(estimator)
+            shap_output = explainer(X_instance)
+
+            # Handle multi-class output shape [samples, features, classes]
+            if hasattr(shap_output, 'values') and len(np.array(shap_output.values).shape) == 3:
+                val_to_plot = shap_output[:, :, 1]
+            else:
+                val_to_plot = shap_output
+
+            fig, ax = plt.subplots(figsize=(10, 5))
+            shap.plots.waterfall(val_to_plot[0], show=False)
+            st.pyplot(fig, use_container_width=True)
+            plt.close(fig)
         else:
-            # For other models, use KernelExplainer
-            explainer = shap.KernelExplainer(
-                model.predict_proba if hasattr(model, 'predict_proba') else model.predict,
-                shap.sample(X_data, min(100, len(X_data)))
-            )
-        
-        # Get SHAP values
-        if isinstance(X_sample, pd.DataFrame):
-            X_sample_array = X_sample.values
-        else:
-            X_sample_array = X_sample
-        
-        shap_values = explainer.shap_values(X_sample_array)
-        
-        # Handle different SHAP output formats
-        if isinstance(shap_values, list):
-            # Binary classification returns [values_class_0, values_class_1]
-            shap_values = shap_values[1]
-        
-        base_value = explainer.expected_value
-        if isinstance(base_value, list):
-            base_value = base_value[1]
-        
-        # Create feature contribution dict
-        feature_contributions = {}
-        if len(shap_values.shape) > 1:
-            shap_values = shap_values[0]
-        
-        for name, value in zip(feature_names, shap_values):
-            feature_contributions[name] = float(value)
-        
-        # Sort by absolute value
-        feature_contributions = dict(sorted(
-            feature_contributions.items(),
-            key=lambda x: abs(x[1]),
-            reverse=True
-        )[:max_display])
-        
-        return {
-            "shap_values": feature_contributions,
-            "base_value": float(base_value),
-            "type": "shap_explanation"
-        }
-    
-    except Exception as e:
-        st.warning(f"Error generating SHAP explanation: {e}")
-        return None
+            # KernelExplainer fallback for logistic / ensemble
+            bg = shap.sample(X_train_sample, min(50, len(X_train_sample)))
+            pred_fn = lambda x: _predict_scores(model_wrapper, pd.DataFrame(x, columns=feature_names))
+            explainer = shap.KernelExplainer(pred_fn, bg)
+            shap_vals = explainer.shap_values(X_instance)
+
+            fig, ax = plt.subplots(figsize=(10, 4))
+            shap.summary_plot(shap_vals, X_instance, feature_names=feature_names,
+                              plot_type="bar", show=False)
+            st.pyplot(fig, use_container_width=True)
+            plt.close(fig)
+
+        return True
+    except Exception as exc:
+        st.warning(f"SHAP rendering failed: {exc}")
+        return False
 
 
-def generate_lime_explanation(model, X_train, X_sample, feature_names, model_type="classification", num_features=10):
+def plot_shap_summary(model_wrapper, X_sample, feature_names):
     """
-    Generate LIME explanation for model predictions.
-    
-    Args:
-        model: Trained model
-        X_train: Training data for reference
-        X_sample: Sample to explain
-        feature_names: Feature names
-        model_type: Type of model
-        num_features: Number of features to display
-    
-    Returns:
-        dict: LIME explanation
+    Render a SHAP beeswarm summary plot across a dataset sample.
+    Useful for understanding global feature importance.
     """
+    if not _SHAP_AVAILABLE:
+        st.warning("SHAP not installed.")
+        return False
+
+    estimator = _extract_estimator(model_wrapper)
     try:
-        if isinstance(X_train, pd.DataFrame):
-            X_train_array = X_train.values
+        type_str = str(type(estimator)).lower()
+        if 'forest' in type_str or 'xgb' in type_str or 'gradient' in type_str:
+            explainer = shap.TreeExplainer(estimator)
+            shap_vals = explainer.shap_values(X_sample)
+            if isinstance(shap_vals, list):
+                shap_vals = shap_vals[1]  # class=1 for binary
         else:
-            X_train_array = X_train
-        
-        if isinstance(X_sample, pd.DataFrame):
-            X_sample_array = X_sample.values[0]
-        else:
-            X_sample_array = X_sample[0]
-        
-        # Create explainer
-        explainer = lime.lime_tabular.LimeTabularExplainer(
-            training_data=X_train_array,
+            bg = shap.sample(X_sample, min(50, len(X_sample)))
+            pred_fn = lambda x: _predict_scores(model_wrapper, pd.DataFrame(x, columns=feature_names))
+            explainer = shap.KernelExplainer(pred_fn, bg)
+            shap_vals = explainer.shap_values(X_sample)
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        shap.summary_plot(shap_vals, X_sample, feature_names=feature_names, show=False)
+        st.pyplot(fig, use_container_width=True)
+        plt.close(fig)
+        return True
+    except Exception as exc:
+        st.warning(f"SHAP summary failed: {exc}")
+        return False
+
+
+# ───────────────────────────── LIME ─────────────────────────────
+
+def generate_lime_explanation(model_wrapper, X_train_sample, X_instance, feature_names):
+    """
+    Render a LIME local surrogate bar chart explaining an individual prediction.
+    """
+    if not _LIME_AVAILABLE:
+        st.warning("LIME is not installed. Run `pip install lime` to enable this feature.")
+        return False
+
+    st.markdown("#### 🟠 LIME — Local Surrogate Model")
+    st.markdown("Simulates thousands of slight variations around this transaction to show what *tipped* the model's decision.")
+
+    def predict_proba_wrapper(x):
+        try:
+            probs_1 = _predict_scores(model_wrapper, pd.DataFrame(x, columns=feature_names))
+            return np.vstack((1 - probs_1, probs_1)).T
+        except Exception:
+            return np.zeros((x.shape[0], 2))
+
+    try:
+        sample_n = min(500, len(X_train_sample))
+        X_bg = X_train_sample.sample(sample_n, random_state=42) if len(X_train_sample) > sample_n else X_train_sample
+
+        explainer = LimeTabularExplainer(
+            training_data=X_bg.values,
             feature_names=feature_names,
-            class_names=['Not Fraud', 'Fraud'],
+            class_names=['Legitimate', 'Fraud'],
             mode='classification',
-            verbose=False
+            random_state=42
         )
-        
-        # Create prediction function
-        if hasattr(model, 'predict_proba'):
-            pred_fn = model.predict_proba
-        else:
-            pred_fn = lambda x: np.array([1 - model.predict(x), model.predict(x)]).T
-        
-        # Explain prediction
         exp = explainer.explain_instance(
-            X_sample_array,
-            pred_fn,
-            num_features=num_features
+            data_row=X_instance.iloc[0].values,
+            predict_fn=predict_proba_wrapper,
+            num_features=10
         )
-        
-        # Extract feature contributions
-        feature_contributions = {}
-        for feature_name, weight in exp.as_list():
-            feature_contributions[feature_name] = weight
-        
-        return {
-            "lime_explanation": feature_contributions,
-            "type": "lime_explanation"
-        }
-    
-    except Exception as e:
-        st.warning(f"Error generating LIME explanation: {e}")
-        return None
+        fig = exp.as_pyplot_figure()
+        plt.title("Feature Attribution — What Drove the Fraud Score?", pad=14)
+        plt.tight_layout()
+        st.pyplot(fig, use_container_width=True)
+        plt.close(fig)
+        return True
+    except Exception as exc:
+        st.warning(f"LIME rendering failed: {exc}")
+        return False
 
 
-def plot_feature_importance(model, feature_names, model_name="Model", top_n=10):
+# ───────────────────────── Feature Importance ───────────────────
+
+def plot_feature_importance(importance_dict, title="Feature Importance", top_n=15):
     """
-    Plot feature importance.
-    
-    Args:
-        model: Trained model
-        feature_names: Feature names
-        model_name: Name of model
-        top_n: Number of top features to show
-    
-    Returns:
-        matplotlib figure
+    Render a horizontal bar chart of feature importances.
+    Works with any dict of {feature_name: importance_value}.
     """
-    importance_dict = get_feature_importance(model, feature_names, model_name)
-    
-    # Get top N features
-    top_features = dict(list(importance_dict.items())[:top_n])
-    
-    fig, ax = plt.subplots(figsize=(10, 6))
-    names = list(top_features.keys())
-    values = list(top_features.values())
-    
-    ax.barh(names, values, color='steelblue')
-    ax.set_xlabel('Importance Score')
-    ax.set_title(f'Feature Importance - {model_name}')
-    ax.invert_yaxis()
-    
+    if not importance_dict:
+        st.info("No feature importance data available.")
+        return
+
+    items = sorted(importance_dict.items(), key=lambda x: x[1], reverse=True)[:top_n]
+    names = [i[0] for i in items]
+    values = [i[1] for i in items]
+
+    fig, ax = plt.subplots(figsize=(10, max(4, len(names) * 0.4)))
+    bars = ax.barh(names[::-1], values[::-1],
+                   color=plt.cm.RdYlGn_r(np.linspace(0.2, 0.9, len(names))))
+    ax.set_xlabel("Importance Score")
+    ax.set_title(title)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
     plt.tight_layout()
-    return fig
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
 
 
-def plot_shap_summary(model, X_data, feature_names, model_type="classification"):
-    """
-    Plot SHAP summary plot.
-    
-    Args:
-        model: Trained model
-        X_data: Data to explain
-        feature_names: Feature names
-        model_type: Type of model
-    
-    Returns:
-        matplotlib figure or None
-    """
-    try:
-        if model_type == "autoencoder":
-            return None
-        
-        if isinstance(X_data, pd.DataFrame):
-            X_array = X_data.values
-        else:
-            X_array = X_data
-        
-        # Create explainer based on model type
-        if hasattr(model, 'tree_'):
-            explainer = shap.TreeExplainer(model)
-        else:
-            explainer = shap.KernelExplainer(
-                model.predict_proba if hasattr(model, 'predict_proba') else model.predict,
-                shap.sample(X_data, min(50, len(X_data)))
-            )
-        
-        shap_values = explainer.shap_values(X_array[:50])  # Limit for speed
-        
-        # Handle list output
-        if isinstance(shap_values, list):
-            shap_values = shap_values[1]
-        
-        # Create figure
-        fig = plt.figure(figsize=(10, 6))
-        shap.summary_plot(shap_values, X_array[:50], feature_names=feature_names, show=False)
-        
-        return fig
-    
-    except Exception as e:
-        st.warning(f"Error creating SHAP plot: {e}")
-        return None
+# ─────────────────────────── Unified Entry-Point ─────────────────
 
-
-def explain_prediction(model, X_sample, feature_names, original_data, model_type="classification", use_lime=False):
+def explain_prediction(model_wrapper, X_train_sample, X_instance, feature_names,
+                       use_shap=True, use_lime=True):
     """
-    Generate comprehensive explanation for a prediction.
-    
-    Args:
-        model: Trained model
-        X_sample: Processed sample to explain
-        feature_names: Feature names
-        original_data: Original transaction data
-        model_type: Type of model
-        use_lime: Whether to use LIME
-    
-    Returns:
-        dict: Comprehensive explanation
+    Unified convenience wrapper that renders both SHAP and LIME panels
+    inside the active Streamlit context.
     """
-    from modules.model_trainer import predict_fraud
-    
-    # Get prediction
-    prediction, probability = predict_fraud(model, X_sample, model_type)
-    
-    explanation = {
-        "prediction": prediction,
-        "probability": probability,
-        "features": {}
-    }
-    
-    # Add feature values
-    if isinstance(X_sample, pd.DataFrame):
-        for feature_name in feature_names:
-            if feature_name in X_sample.columns:
-                explanation["features"][feature_name] = float(X_sample[feature_name].values[0])
-    
-    # Generate SHAP explanation (if possible)
-    try:
-        shap_exp = generate_shap_explanation(model, pd.DataFrame(np.zeros((10, len(feature_names))), columns=feature_names), X_sample, feature_names, model_type)
-        if shap_exp:
-            explanation["shap"] = shap_exp
-    except:
-        pass
-    
-    # Add anomaly indicators based on features
-    anomalies = []
-    
-    # Check for unusual amount
-    if "amount" in X_sample.columns:
-        amount = X_sample["amount"].values[0]
-        if amount > 40000:
-            anomalies.append(f"Unusually high amount: ₹{amount:,.2f}")
-    
-    # Check for new device
-    if "device_age_days" in X_sample.columns:
-        device_age = X_sample["device_age_days"].values[0]
-        if device_age < 30:
-            anomalies.append(f"New device (age: {device_age:.0f} days)")
-    
-    # Check for location change
-    if "location_change_indicator" in X_sample.columns:
-        loc_change = X_sample["location_change_indicator"].values[0]
-        if loc_change > 0.5:
-            anomalies.append("Location change detected")
-    
-    # Check for unusual time
-    if "hour" in X_sample.columns:
-        hour = X_sample["hour"].values[0]
-        if hour < 5 or hour > 23:
-            anomalies.append(f"Unusual transaction time: {hour}:00")
-    
-    # Check for high transaction count
-    if "transaction_count_24h" in X_sample.columns:
-        txn_count = X_sample["transaction_count_24h"].values[0]
-        if txn_count > 15:
-            anomalies.append(f"High transaction count in 24h: {txn_count:.0f}")
-    
-    explanation["anomalies"] = anomalies
-    
-    return explanation
+    explained = False
+    if use_shap:
+        explained = generate_shap_explanation(model_wrapper, X_train_sample, X_instance, feature_names)
+        st.markdown("---")
+    if use_lime:
+        explained = generate_lime_explanation(model_wrapper, X_train_sample, X_instance, feature_names) or explained
+    return explained

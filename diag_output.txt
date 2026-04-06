@@ -1,0 +1,31 @@
+
+--- Testing Dataset: paysim ---
+Top absolute correlations with target:
+target            1.000000
+amount            0.212491
+oldbalanceOrg     0.031743
+oldbalanceDest    0.017516
+Name: target, dtype: float64
+
+--- Testing Dataset: banksim ---
+Top absolute correlations with target:
+target    1.00000
+amount    0.89785
+Name: target, dtype: float64
+
+--- Testing Dataset: cicids ---
+Top absolute correlations with target:
+Total Length of Fwd Packets   NaN
+Flow Bytes/s                  NaN
+target                        NaN
+Name: target, dtype: float64
+
+--- Testing Dataset: ieee ---
+Top absolute correlations with target:
+target            1.000000
+dist1             0.924923
+TransactionAmt    0.866005
+card1             0.009652
+card2             0.007389
+TransactionDT     0.005359
+Name: target, dtype: float64
